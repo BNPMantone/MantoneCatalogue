@@ -1,4 +1,4 @@
-# Mantone Catalogue - release script
+# Mantone Catalogue - release script (GitHub Releases)
 # Usage:  powershell -ExecutionPolicy Bypass -File .\release.ps1 -Notes "What changed" [-Bump patch|minor|major]
 param(
     [string]$Notes = "Bug fixes and improvements",
@@ -7,6 +7,34 @@ param(
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 function Fail($m) { Write-Host "ERROR: $m" -ForegroundColor Red; exit 1 }
+
+# ---- find Java automatically (Android Studio ships one) so JAVA_HOME does not need to be set
+function Test-Java($dir) { $dir -and (Test-Path (Join-Path $dir "bin\java.exe")) }
+if (-not (Test-Java $env:JAVA_HOME)) {
+    $candidates = @(
+        "$env:ProgramFiles\Android\Android Studio\jbr",
+        "$env:ProgramFiles\Android\Android Studio\jre",
+        "${env:ProgramFiles(x86)}\Android\Android Studio\jbr",
+        "$env:LOCALAPPDATA\Programs\Android Studio\jbr",
+        "$env:LOCALAPPDATA\Android\Android Studio\jbr"
+    )
+    $candidates += @(Get-ChildItem "$env:LOCALAPPDATA\JetBrains\Toolbox\apps\AndroidStudio" -Recurse -Directory -Filter jbr -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+    $candidates += @(Get-ChildItem "$env:ProgramFiles\Java", "$env:ProgramFiles\Eclipse Adoptium", "$env:ProgramFiles\Microsoft" -Directory -Filter "*jdk*" -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+    $found = $candidates | Where-Object { Test-Java $_ } | Select-Object -First 1
+    if (-not $found) {
+        $onPath = Get-Command java -ErrorAction SilentlyContinue
+        if (-not $onPath) { Fail "Java not found. Install Android Studio or JDK 17, or set JAVA_HOME to your JDK folder." }
+    } else {
+        $env:JAVA_HOME = $found
+        $env:Path = "$found\bin;$env:Path"
+        Write-Host "Using Java from $found"
+    }
+}
+# ---- find the Android SDK if Gradle has no local.properties
+if (-not $env:ANDROID_HOME -and -not (Test-Path .\local.properties)) {
+    $sdk = Join-Path $env:LOCALAPPDATA "Android\Sdk"
+    if (Test-Path $sdk) { $env:ANDROID_HOME = $sdk } else { Fail "Android SDK not found. Open this project once in Android Studio so it creates local.properties." }
+}
 
 # ---- checks
 $repo = ((Get-Content release.properties | Where-Object { $_ -match '^repo=' }) -replace '^repo=', '').Trim()

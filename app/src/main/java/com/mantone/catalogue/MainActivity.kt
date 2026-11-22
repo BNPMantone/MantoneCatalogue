@@ -63,10 +63,20 @@ import android.provider.Settings
 import androidx.compose.foundation.Image
 import androidx.compose.ui.res.painterResource
 import androidx.core.content.FileProvider
-import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import org.json.JSONObject
+import com.google.firebase.FirebaseApp
+import com.google.firebase.FirebaseNetworkException
+import com.google.firebase.FirebaseTooManyRequestsException
+import com.google.firebase.auth.FirebaseAuth
+import androidx.compose.ui.text.input.VisualTransformation
+import com.google.firebase.auth.EmailAuthProvider
+import com.google.firebase.auth.FirebaseAuthInvalidCredentialsException
+import com.google.firebase.auth.FirebaseAuthInvalidUserException
+import com.google.firebase.auth.FirebaseAuthUserCollisionException
+import com.google.firebase.firestore.FirebaseFirestoreException
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -88,7 +98,7 @@ fun refresh() {
     syncState = "loading"; refreshTick++
     Updater.checked = false; Updater.check()   // login stays blocked until the update check finishes
     Handler(Looper.getMainLooper()).postDelayed({ if (id == syncId && syncState == "loading") syncState = "failed" }, 10000)
-    db.collection("jobs").limit(1).get(Source.SERVER)
+    db.collection("ping").document("ok").get(Source.SERVER)
         .addOnSuccessListener { if (id == syncId) syncState = "ok" }
         .addOnFailureListener { if (id == syncId) syncState = "failed" }
 }
@@ -161,6 +171,47 @@ object Updater {
             } catch (e: Exception) { h.post { downloading = false; error = "Download failed. Check your internet and try again." } }
         }.start()
     }
+}
+
+// Real Firebase accounts: username -> internal e-mail, password checked by Google. No password is ever stored or downloaded by the app.
+val auth get() = FirebaseAuth.getInstance()
+fun emailFor(name: String) = name.trim().lowercase().replace(Regex("[^a-z0-9]+"), ".").trim('.') + "@mantone.app"
+// Phone number = login ID (10-digit mobile, "+91"/spaces ignored). No SMS is sent; the number is simply the username.
+fun normPhone(s: String): String { val d = s.filter { it.isDigit() }; return if (d.length == 12 && d.startsWith("91")) d.drop(2) else d }
+fun phoneFilter(s: String) = s.filter { it.isDigit() || it == '+' || it == ' ' }.take(15)
+
+// Password rules for new / changed passwords
+fun pwError(p: String): String? = when {
+    p.length < 8 -> "Password must be at least 8 characters"
+    !p.any { it.isLetter() } || !p.any { it.isDigit() } -> "Password must contain letters and numbers"
+    else -> null
+}
+fun changePassword(cur: String, new: String, cb: (String?) -> Unit) {
+    val u = auth.currentUser; val email = u?.email
+    if (u == null || email == null) { cb("Not signed in"); return }
+    u.reauthenticate(EmailAuthProvider.getCredential(email, cur))
+        .addOnSuccessListener { u.updatePassword(new).addOnSuccessListener { cb(null) }.addOnFailureListener { cb("Could not change password: ${it.message}") } }
+        .addOnFailureListener { cb("Current password is incorrect") }
+}
+@Composable fun PasswordField(value: String, label: String, onChange: (String) -> Unit) {
+    var show by remember { mutableStateOf(false) }
+    OutlinedTextField(value, { onChange(it.take(64)) }, label = { Text(label) }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+        visualTransformation = if (show) VisualTransformation.None else PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+        trailingIcon = { TextButton({ show = !show }) { Text(if (show) "Hide" else "Show", fontSize = 12.sp) } })
+}
+// Admin creates another person's account through a second, separate Firebase session so the admin stays logged in.
+fun createAccount(name: String, phone: String, password: String, roles: List<String>, cb: (String?) -> Unit) {
+    val app = try { FirebaseApp.getInstance("creator") } catch (e: IllegalStateException) { FirebaseApp.initializeApp(appCtx, FirebaseApp.getInstance().options, "creator") }
+    val a2 = FirebaseAuth.getInstance(app)
+    a2.createUserWithEmailAndPassword(emailFor(phone), password)
+        .addOnSuccessListener { r ->
+            val id = r.user?.uid ?: ""
+            db.collection("users").document(id).set(mapOf("name" to name, "phone" to phone, "roles" to roles, "auth" to true))
+                .addOnSuccessListener { a2.signOut(); cb(null) }
+                .addOnFailureListener { r.user?.delete(); a2.signOut(); cb("Could not save the user: ${it.message}") }
+        }.addOnFailureListener { e ->
+            cb(if (e is FirebaseAuthUserCollisionException) "That phone number already has an account (or had one before). If it was deleted earlier, also remove it in Firebase console > Authentication." else "Failed: ${e.message}")
+        }
 }
 
 var darkMode by mutableStateOf(false)
@@ -354,7 +405,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@Composable fun Login(onOk: (String, String, String) -> Unit) {
+@Composable fun Login(onOk: (String, String, String, String) -> Unit) {
     var n by remember { mutableStateOf("") }; var p by remember { mutableStateOf("") }; var err by remember { mutableStateOf("") }; var busy by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().background(Navy).padding(horizontal = 24.dp + sidePad(480.dp), vertical = 24.dp), verticalArrangement = Arrangement.Center) {
         Text("MANTONE", style = MaterialTheme.typography.headlineLarge, color = Color.White)
@@ -362,33 +413,49 @@ class MainActivity : ComponentActivity() {
         Spacer(Modifier.height(24.dp))
         Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
             Column(Modifier.padding(16.dp)) {
-                OutlinedTextField(n, { n = it }, label = { Text("Name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(n, { n = phoneFilter(it) }, label = { Text("Phone number") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone), modifier = Modifier.fillMaxWidth())
                 Spacer(Modifier.height(8.dp))
-                OutlinedTextField(p, { p = it.filter { c -> c.isDigit() }.take(4) }, label = { Text("4-digit PIN") }, singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword), modifier = Modifier.fillMaxWidth())
+                PasswordField(p, "Password") { p = it }
                 if (err.isNotEmpty()) Text(err, color = MaterialTheme.colorScheme.error)
                 Button({
-                    if (n.isBlank()) err = "Enter your username"
-                    else if (p.length < 4) err = "Enter your 4-digit PIN"
+                    if (n.isBlank()) err = "Enter your phone number"
+                    else if (normPhone(n).length != 10) err = "Enter your 10-digit phone number"
+                    else if (p.isEmpty()) err = "Enter your password"
                     else {
                         busy = true; err = ""
                         var finished = false
                         val h = Handler(Looper.getMainLooper())
                         h.postDelayed({ if (!finished) { finished = true; busy = false; err = "Connection timed out. Check your internet and try again." } }, 12000)
-                        db.collection("users").get(Source.SERVER)
-                            .addOnSuccessListener { q ->
+                        auth.signInWithEmailAndPassword(emailFor(normPhone(n)), p)
+                            .addOnSuccessListener { r ->
                                 if (finished) return@addOnSuccessListener
-                                finished = true; h.removeCallbacksAndMessages(null); busy = false
-                                val d = q.documents.firstOrNull { (it.getString("name") ?: "").equals(n.trim(), ignoreCase = true) }
-                                when {
-                                    d == null -> err = "Username not found"
-                                    d.getString("pin") != p -> err = "Incorrect PIN"
-                                    else -> onOk(d.getString("name") ?: "", rolesOf(d.data ?: mapOf()).joinToString(","), d.id)
-                                }
-                            }.addOnFailureListener {
+                                val id = r.user?.uid ?: ""
+                                db.collection("users").document(id).get(Source.SERVER)
+                                    .addOnSuccessListener { d ->
+                                        if (finished) return@addOnSuccessListener
+                                        finished = true; h.removeCallbacksAndMessages(null)
+                                        if (!d.exists()) { busy = false; auth.signOut(); err = "This account has been disabled. Contact your admin." }
+                                        else {
+                                            // ONE session per account: writing a new sessionId signs this user out of every other device
+                                            val sid = UUID.randomUUID().toString()
+                                            db.collection("users").document(id).update(mapOf("sessionId" to sid, "sessionAt" to now(), "device" to Build.MODEL))
+                                                .addOnSuccessListener { busy = false; onOk(d.getString("name") ?: n.trim(), rolesOf(d.data ?: mapOf()).joinToString(","), id, sid) }
+                                                .addOnFailureListener { busy = false; auth.signOut(); err = "Could not start your session. Try again." }
+                                        }
+                                    }.addOnFailureListener {
+                                        if (finished) return@addOnFailureListener
+                                        finished = true; h.removeCallbacksAndMessages(null); busy = false; auth.signOut()
+                                        err = "This account has been disabled. Contact your admin."
+                                    }
+                            }.addOnFailureListener { e ->
                                 if (finished) return@addOnFailureListener
                                 finished = true; h.removeCallbacksAndMessages(null); busy = false
-                                err = "Could not connect to the server. Check your internet."
+                                err = when (e) {
+                                    is FirebaseAuthInvalidCredentialsException, is FirebaseAuthInvalidUserException -> "Wrong phone number or password"
+                                    is FirebaseTooManyRequestsException -> "Too many attempts. Wait a few minutes and try again."
+                                    is FirebaseNetworkException -> "Could not connect to the server. Check your internet."
+                                    else -> "Login failed. Check your internet and try again."
+                                }
                             }
                     }
                 }, Modifier.fillMaxWidth().height(56.dp).padding(top = 12.dp), shape = RoundedCornerShape(12.dp), enabled = !busy,
@@ -405,24 +472,25 @@ class MainActivity : ComponentActivity() {
     var role by remember { mutableStateOf(sp.getString("r", "") ?: "") }
     var uid by remember { mutableStateOf(sp.getString("u", "") ?: "") }
     var page by remember { mutableStateOf("home") }
-    LaunchedEffect(Unit) {   // first run: default admin (admin / 1234)
-        db.collection("users").limit(1).get().addOnSuccessListener { if (it.isEmpty) db.collection("users").add(mapOf("name" to "admin", "pin" to "1234", "role" to "Admin")) }
-    }
     val ctx = LocalContext.current
     fun logout(msg: String? = null) {
-        sp.edit().clear().apply(); role = ""; name = ""; uid = ""; page = "home"
+        sp.edit().clear().apply(); role = ""; name = ""; uid = ""; page = "home"; auth.signOut()
         ctx.stopService(Intent(ctx, JobWatchService::class.java))
         if (msg != null) Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show()
     }
     LaunchedEffect(uid) {
         if (uid.isEmpty()) { if (role.isNotEmpty()) logout() }   // old session without an account id: sign in again
+        else if (auth.currentUser == null) logout()
         else ctx.startForegroundService(Intent(ctx, JobWatchService::class.java))
     }
     DisposableEffect(uid) {
         if (uid.isEmpty()) return@DisposableEffect onDispose { }
-        val r = db.collection("users").document(uid).addSnapshotListener(MetadataChanges.INCLUDE) { s, _ ->
+        val r = db.collection("users").document(uid).addSnapshotListener(MetadataChanges.INCLUDE) { s, e ->
+            if (e != null && e.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) { logout("Your account was removed. You have been logged out."); return@addSnapshotListener }
             if (s == null) return@addSnapshotListener
             if (s.exists()) {
+                val ds = s.getString("sessionId"); val mine = sp.getString("sid", "") ?: ""
+                if (ds != null && mine.isNotEmpty() && ds != mine) { logout("You were signed out because this account signed in on another device."); return@addSnapshotListener }
                 val nr = rolesOf(s.data ?: mapOf()).joinToString(",")
                 if (nr.isNotEmpty() && nr != role) { role = nr; sp.edit().putString("r", nr).apply() }   // new roles apply instantly
             } else if (!s.metadata.isFromCache) logout("Your account was removed. You have been logged out.")
@@ -430,7 +498,7 @@ class MainActivity : ComponentActivity() {
         onDispose { r.remove() }
     }
     val roles = role.split(",").flatMap { if (it == "Lamination+Foil") listOf("Lamination", "Foil") else listOf(it) }
-    if (role.isEmpty()) Login { n, r, u -> sp.edit().putString("n", n).putString("r", r).putString("u", u).apply(); name = n; role = r; uid = u }
+    if (role.isEmpty()) Login { n, r, u, sid -> sp.edit().putString("n", n).putString("r", r).putString("u", u).putString("sid", sid).apply(); name = n; role = r; uid = u }
     else {
         val drawer = rememberDrawerState(DrawerValue.Closed)
         val scope = rememberCoroutineScope()
@@ -484,13 +552,32 @@ class MainActivity : ComponentActivity() {
 
 @Composable fun SettingsScreen() {
     val ctx = LocalContext.current
-    Column {
+    var cur by remember { mutableStateOf("") }; var np by remember { mutableStateOf("") }; var cp by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }; var msg by remember { mutableStateOf("") }; var ok by remember { mutableStateOf(false) }
+    Column(Modifier.verticalScroll(rememberScrollState())) {
         Text("SETTINGS", Modifier.padding(vertical = 12.dp), style = MaterialTheme.typography.titleMedium)
         Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(2.dp)) {
             Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("🌙  Dark mode", Modifier.weight(1f))
                 Switch(darkMode, { darkMode = it; ctx.getSharedPreferences("ui", Context.MODE_PRIVATE).edit().putBoolean("dark", it).apply() })
             }
+        }
+        Text("CHANGE PASSWORD", Modifier.padding(top = 24.dp, bottom = 8.dp), style = MaterialTheme.typography.titleMedium)
+        PasswordField(cur, "Current password") { cur = it }
+        Spacer(Modifier.height(8.dp)); PasswordField(np, "New password (min 8, letters + numbers)") { np = it }
+        Spacer(Modifier.height(8.dp)); PasswordField(cp, "Confirm new password") { cp = it }
+        if (msg.isNotEmpty()) Text(msg, Modifier.padding(top = 8.dp), color = if (ok) Green else MaterialTheme.colorScheme.error)
+        Button({
+            val e = pwError(np)
+            when {
+                cur.isEmpty() -> { ok = false; msg = "Enter your current password" }
+                e != null -> { ok = false; msg = e }
+                np != cp -> { ok = false; msg = "Passwords don't match" }
+                np == cur -> { ok = false; msg = "The new password must be different" }
+                else -> { busy = true; msg = ""; changePassword(cur, np) { r -> busy = false; if (r == null) { ok = true; msg = "Password changed ✅"; cur = ""; np = ""; cp = "" } else { ok = false; msg = r } } }
+            }
+        }, Modifier.fillMaxWidth().height(56.dp).padding(top = 8.dp), enabled = !busy, shape = RoundedCornerShape(12.dp), colors = ButtonDefaults.buttonColors(containerColor = Blue)) {
+            if (busy) CircularProgressIndicator(Modifier.size(24.dp), color = Color.White, strokeWidth = 2.dp) else Text("CHANGE PASSWORD")
         }
     }
 }
@@ -740,14 +827,14 @@ fun statusColor(s: String) = when (s) { "READY TO DISPATCH" -> Green; "DELIVERED
     var open by remember { mutableStateOf(false) }
     var confirm by remember { mutableStateOf(false) }
     if (confirm) AlertDialog(onDismissRequest = { confirm = false }, title = { Text("Delete ${u.s("name")}?") },
-        text = { Text("They will be logged out immediately and can no longer sign in.") },
+        text = { Text("They are logged out immediately and can no longer sign in. To reuse this phone number later, also delete the account in Firebase console > Authentication.") },
         confirmButton = { Button({ confirm = false; db.collection("users").document(u.s("_id")).delete(); logEvent("Deleted user", who, target = u.s("name")) }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Text("DELETE") } },
         dismissButton = { TextButton({ confirm = false }) { Text("Cancel") } })
     Card(Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable { open = !open }, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(2.dp)) {
         Column(Modifier.padding(12.dp)) {
             Text("${u.s("name")} — ${rolesOf(u).joinToString(" + ")}", style = MaterialTheme.typography.titleMedium)
+            if (u.s("phone").isNotEmpty()) Text("📞 ${u.s("phone")}", color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (open) {
-                Text("PIN ${u.s("pin")}", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 if (u.s("name") == "admin") Text("Main admin account (locked)", color = Color.Gray)
                 else {
                     Button(onEdit, Modifier.fillMaxWidth().height(52.dp).padding(top = 8.dp), shape = RoundedCornerShape(12.dp), colors = ButtonDefaults.buttonColors(containerColor = Orange)) { Text("EDIT ROLES") }
@@ -774,7 +861,7 @@ fun statusColor(s: String) = when (s) { "READY TO DISPATCH" -> Green; "DELIVERED
             }) { Text("SAVE") } },
             dismissButton = { TextButton({ editing = null }) { Text("Cancel") } })
     }
-    var n by remember { mutableStateOf("") }; var p by remember { mutableStateOf("") }; var sel by remember { mutableStateOf(setOf<String>()) }
+    var n by remember { mutableStateOf("") }; var ph by remember { mutableStateOf("") }; var p by remember { mutableStateOf("") }; var c by remember { mutableStateOf("") }; var sel by remember { mutableStateOf(setOf<String>()) }
     var busy by remember { mutableStateOf(false) }; var msg by remember { mutableStateOf("") }; var ok by remember { mutableStateOf(false) }
     var confirmAdd by remember { mutableStateOf(false) }
     var rolesDlg by remember { mutableStateOf(false) }
@@ -782,33 +869,39 @@ fun statusColor(s: String) = when (s) { "READY TO DISPATCH" -> Green; "DELIVERED
         text = { Column(Modifier.verticalScroll(rememberScrollState())) { RoleChecklist(sel) { sel = it } } },
         confirmButton = { Button({ rolesDlg = false }) { Text("DONE") } })
     if (confirmAdd) AlertDialog(onDismissRequest = { confirmAdd = false }, title = { Text("Confirm new user") },
-        text = { Column { Text("Name: ${n.trim()}"); Text("Roles being given:", Modifier.padding(top = 8.dp)); ROLES.filter { it in sel }.forEach { Text("• $it") } } },
+        text = { Column { Text("Name: ${n.trim()}"); Text("Phone: ${normPhone(ph)}"); Text("Roles being given:", Modifier.padding(top = 8.dp)); ROLES.filter { it in sel }.forEach { Text("• $it") } } },
         confirmButton = { Button({
             confirmAdd = false; busy = true; msg = ""
             var fin = false
             val h = Handler(Looper.getMainLooper())
             h.postDelayed({ if (!fin) { fin = true; busy = false; ok = false; msg = "No response from the server. The user is NOT saved to the cloud until you are online." } }, 12000)
-            db.collection("users").add(mapOf("name" to n.trim(), "pin" to p, "roles" to sel.toList())).track()
-                .addOnSuccessListener { logEvent("Created user", who, target = n.trim(), detail = "Roles: " + ROLES.filter { it in sel }.joinToString(", ")); fin = true; h.removeCallbacksAndMessages(null); busy = false; ok = true; msg = "User saved to the cloud ✅"; n = ""; p = ""; sel = setOf() }
-                .addOnFailureListener { fin = true; h.removeCallbacksAndMessages(null); busy = false; ok = false; msg = "Failed to save: ${it.message}" }
+            createAccount(n.trim(), normPhone(ph), p, ROLES.filter { it in sel }) { e ->
+                fin = true; h.removeCallbacksAndMessages(null); busy = false
+                if (e == null) { logEvent("Created user", who, target = n.trim(), detail = "Roles: " + ROLES.filter { it in sel }.joinToString(", ")); ok = true; msg = "User created ✅ Share the password with them now; it can't be viewed later"; n = ""; ph = ""; p = ""; c = ""; sel = setOf() }
+                else { ok = false; msg = e }
+            }
         }) { Text("CREATE USER") } },
         dismissButton = { TextButton({ confirmAdd = false }) { Text("Cancel") } })
     LazyColumn {
         item {
             Text("ADD USER", Modifier.padding(vertical = 8.dp), style = MaterialTheme.typography.titleMedium)
-            OutlinedTextField(n, { n = it }, label = { Text("Name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(p, { p = it.filter { c -> c.isDigit() }.take(4) }, label = { Text("4-digit PIN") }, singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(n, { n = it }, label = { Text("Full name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(ph, { ph = phoneFilter(it) }, label = { Text("Phone number (login ID)") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone), modifier = Modifier.fillMaxWidth())
+            PasswordField(p, "Password (min 8, letters + numbers)") { p = it }
+            PasswordField(c, "Confirm password") { c = it }
             OutlinedButton({ rolesDlg = true }, Modifier.fillMaxWidth().height(56.dp).padding(top = 8.dp)) {
                 Text(if (sel.isEmpty()) "Select Roles" else "Roles: " + ROLES.filter { it in sel }.joinToString(", "), maxLines = 1)
             }
             if (msg.isNotEmpty()) Text(msg, color = if (ok) Green else MaterialTheme.colorScheme.error)
             Button({
                 when {
-                    n.isBlank() -> { ok = false; msg = "Enter a username" }
-                    p.length != 4 -> { ok = false; msg = "PIN must be exactly 4 digits" }
+                    n.isBlank() -> { ok = false; msg = "Enter the person's name" }
+                    normPhone(ph).length != 10 -> { ok = false; msg = "Enter a valid 10-digit phone number" }
+                    pwError(p) != null -> { ok = false; msg = pwError(p) ?: "" }
+                    p != c -> { ok = false; msg = "Passwords don't match" }
                     sel.isEmpty() -> { ok = false; msg = "Select at least one role" }
-                    users.any { it.s("name").equals(n.trim(), ignoreCase = true) } -> { ok = false; msg = "That username already exists" }
+                    users.any { it.s("name").equals(n.trim(), ignoreCase = true) } -> { ok = false; msg = "A user with that name already exists" }
+                    users.any { it.s("phone") == normPhone(ph) } -> { ok = false; msg = "That phone number already has an account" }
                     else -> { msg = ""; confirmAdd = true }
                 }
             }, Modifier.fillMaxWidth().height(56.dp).padding(top = 8.dp), enabled = !busy, shape = RoundedCornerShape(12.dp), colors = ButtonDefaults.buttonColors(containerColor = Orange)) {

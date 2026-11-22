@@ -8,6 +8,8 @@ import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.IBinder
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.MetadataChanges
 
@@ -37,10 +39,15 @@ class JobWatchService : Service() {
     private fun begin() {
         regs.forEach { it.remove() }; regs.clear()
         val uid = getSharedPreferences("s", MODE_PRIVATE).getString("u", "") ?: ""
-        if (uid.isEmpty()) { stopSelf(); return }
-        regs += db.collection("users").document(uid).addSnapshotListener(MetadataChanges.INCLUDE) { s, _ ->
+        if (uid.isEmpty() || FirebaseAuth.getInstance().currentUser == null) { stopSelf(); return }
+        regs += db.collection("users").document(uid).addSnapshotListener(MetadataChanges.INCLUDE) { s, e ->
+            if (e != null && e.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) { getSharedPreferences("s", MODE_PRIVATE).edit().clear().apply(); stopSelf(); return@addSnapshotListener }
             if (s == null) return@addSnapshotListener
-            if (s.exists()) { roles = rolesOf(s.data ?: mapOf()); check() }
+            if (s.exists()) {
+                val sp = getSharedPreferences("s", MODE_PRIVATE); val ds = s.getString("sessionId"); val mine = sp.getString("sid", "") ?: ""
+                if (ds != null && mine.isNotEmpty() && ds != mine) { sp.edit().clear().apply(); FirebaseAuth.getInstance().signOut(); stopSelf(); return@addSnapshotListener }   // signed in on another device
+                roles = rolesOf(s.data ?: mapOf()); check()
+            }
             else if (!s.metadata.isFromCache) { getSharedPreferences("s", MODE_PRIVATE).edit().clear().apply(); stopSelf() }   // account deleted
         }
         regs += db.collection("jobs").addSnapshotListener { s, _ ->
