@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "485383675494",
+    "project_id": "mantonecatalogue",
+    "storage_bucket": "mantonecatalogue.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:485383675494:android:6c1a117e2e4c40596817a7",
+        "android_client_info": {
+          "package_name": "com.mantone.catalogue"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDNabVSEi1ikgXSHmHGiO3qkyw9XMrn38w"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
