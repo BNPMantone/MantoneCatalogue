@@ -6,5 +6,8 @@ local.properties
 keystore.properties
 releases/
 .vscode/settings.json
+keystore.properties.example
+app/google-services.json
+google-services.json
 serviceAccountKey.json
 firestore.rules
