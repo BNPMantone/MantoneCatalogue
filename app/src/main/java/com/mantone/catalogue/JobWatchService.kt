@@ -18,6 +18,16 @@ class JobWatchService : Service() {
     private val regs = mutableListOf<ListenerRegistration>()
     private var roles = listOf<String>()
     private var jobs = listOf<M>()
+    @Volatile private var stopped = false
+
+    // Ends the service AND removes its notification (nothing may re-post it afterwards)
+    private fun shutdown() {
+        stopped = true
+        regs.forEach { it.remove() }; regs.clear()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        getSystemService(NotificationManager::class.java).cancel(77)
+        stopSelf()
+    }
 
     override fun onBind(i: Intent?): IBinder? = null
 
@@ -27,11 +37,12 @@ class JobWatchService : Service() {
         return Notification.Builder(this, "watch").setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle("Mantone Catalogue")
             .setContentText("Watching for new jobs").setOngoing(true).setOnlyAlertOnce(true).setDeleteIntent(del).build()
     }
-    private fun repost() { getSystemService(NotificationManager::class.java).notify(77, watchNotif()) }
+    private fun repost() { if (!stopped) getSystemService(NotificationManager::class.java).notify(77, watchNotif()) }
 
     override fun onStartCommand(i: Intent?, flags: Int, startId: Int): Int {
         getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel("watch", "Background sync", NotificationManager.IMPORTANCE_LOW))
         startForeground(77, watchNotif(), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        if ((getSharedPreferences("s", MODE_PRIVATE).getString("u", "") ?: "").isEmpty() || FirebaseAuth.getInstance().currentUser == null) { shutdown(); return START_NOT_STICKY }
         if (i?.action != "RESHOW") begin()
         return START_STICKY
     }
@@ -39,16 +50,16 @@ class JobWatchService : Service() {
     private fun begin() {
         regs.forEach { it.remove() }; regs.clear()
         val uid = getSharedPreferences("s", MODE_PRIVATE).getString("u", "") ?: ""
-        if (uid.isEmpty() || FirebaseAuth.getInstance().currentUser == null) { stopSelf(); return }
+        if (uid.isEmpty() || FirebaseAuth.getInstance().currentUser == null) { shutdown(); return }
         regs += db.collection("users").document(uid).addSnapshotListener(MetadataChanges.INCLUDE) { s, e ->
-            if (e != null && e.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) { getSharedPreferences("s", MODE_PRIVATE).edit().clear().apply(); stopSelf(); return@addSnapshotListener }
+            if (e != null && e.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) { getSharedPreferences("s", MODE_PRIVATE).edit().clear().apply(); shutdown(); return@addSnapshotListener }
             if (s == null) return@addSnapshotListener
             if (s.exists()) {
                 val sp = getSharedPreferences("s", MODE_PRIVATE); val ds = s.getString("sessionId"); val mine = sp.getString("sid", "") ?: ""
-                if (ds != null && mine.isNotEmpty() && ds != mine) { sp.edit().clear().apply(); FirebaseAuth.getInstance().signOut(); stopSelf(); return@addSnapshotListener }   // signed in on another device
+                if (ds != null && mine.isNotEmpty() && ds != mine) { sp.edit().clear().apply(); FirebaseAuth.getInstance().signOut(); shutdown(); return@addSnapshotListener }   // signed in on another device
                 roles = rolesOf(s.data ?: mapOf()); check()
             }
-            else if (!s.metadata.isFromCache) { getSharedPreferences("s", MODE_PRIVATE).edit().clear().apply(); stopSelf() }   // account deleted
+            else if (!s.metadata.isFromCache) { getSharedPreferences("s", MODE_PRIVATE).edit().clear().apply(); shutdown() }   // account deleted
         }
         regs += db.collection("jobs").addSnapshotListener { s, _ ->
             if (s != null) { jobs = s.documents.map { (it.data ?: mapOf()) + ("_id" to it.id) }; check() }
@@ -57,6 +68,7 @@ class JobWatchService : Service() {
 
     // Notify once per event (new job step, job put on hold, job cancelled); remembered on the device so nothing repeats.
     private fun check() {
+        if (stopped) return
         repost()   // keep the "Watching" notification visible
         if (roles.isEmpty()) return
         val who = getSharedPreferences("s", MODE_PRIVATE).getString("n", "") ?: ""
@@ -85,5 +97,5 @@ class JobWatchService : Service() {
         repost()   // job alerts must not push it out of the tray
     }
 
-    override fun onDestroy() { regs.forEach { it.remove() }; super.onDestroy() }
+    override fun onDestroy() { stopped = true; regs.forEach { it.remove() }; getSystemService(NotificationManager::class.java).cancel(77); super.onDestroy() }
 }

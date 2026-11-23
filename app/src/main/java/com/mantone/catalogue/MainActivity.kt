@@ -35,6 +35,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -193,6 +194,11 @@ fun changePassword(cur: String, new: String, cb: (String?) -> Unit) {
         .addOnSuccessListener { u.updatePassword(new).addOnSuccessListener { cb(null) }.addOnFailureListener { cb("Could not change password: ${it.message}") } }
         .addOnFailureListener { cb("Current password is incorrect") }
 }
+@Composable fun blueBtn() = ButtonDefaults.buttonColors(containerColor = Blue, contentColor = Color.White, disabledContainerColor = Grey, disabledContentColor = Color.White)
+@Composable fun orangeBtn() = ButtonDefaults.buttonColors(containerColor = Orange, contentColor = Color.White, disabledContainerColor = Grey, disabledContentColor = Color.White)
+@Composable fun DonePopup(text: String?, onClose: () -> Unit) {
+    if (text != null) AlertDialog(onDismissRequest = onClose, title = { Text("Done") }, text = { Text(text) }, confirmButton = { Button(onClose, colors = blueBtn()) { Text("OK") } })
+}
 @Composable fun PasswordField(value: String, label: String, onChange: (String) -> Unit) {
     var show by remember { mutableStateOf(false) }
     OutlinedTextField(value, { onChange(it.take(64)) }, label = { Text(label) }, singleLine = true, modifier = Modifier.fillMaxWidth(),
@@ -214,6 +220,7 @@ fun createAccount(name: String, phone: String, password: String, roles: List<Str
         }
 }
 
+var notifWarn by mutableStateOf(false)   // shown once per fresh launch when notifications are blocked
 var darkMode by mutableStateOf(false)
 var jobsReady by mutableStateOf(false)   // true after the first jobs snapshot (avoids notification spam on login)
 
@@ -373,11 +380,15 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         appCtx = applicationContext
         val sp = getSharedPreferences("s", MODE_PRIVATE)
-        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
-            registerForActivityResult(ActivityResultContracts.RequestPermission()) {}.launch(Manifest.permission.POST_NOTIFICATIONS)
+        val nm = getSystemService(NotificationManager::class.java)
+        if (savedInstanceState == null) {   // fresh launch only (not when the app is just brought back from minimized, or rotated)
+            if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
+                registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted -> notifWarn = !granted || !nm.areNotificationsEnabled() }.launch(Manifest.permission.POST_NOTIFICATIONS)
+            else notifWarn = !nm.areNotificationsEnabled()
+        }
         darkMode = getSharedPreferences("ui", MODE_PRIVATE).getBoolean("dark", false)
         setContent { MaterialTheme(colorScheme = if (darkMode) darkColorScheme(primary = Color(0xFF90CAF9), secondary = Orange, background = Color(0xFF121417), surface = Color(0xFF1E2227))
-            else lightColorScheme(primary = Navy, secondary = Orange, background = Color(0xFFF4F6F9), surface = Color.White)) { Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) { Box(Modifier.fillMaxSize()) { Box(Modifier.fillMaxSize().then(if (syncState != "ok") Modifier.blur(16.dp) else Modifier)) { App(sp) }; SyncOverlay(); UpdateGate() } } } }
+            else lightColorScheme(primary = Navy, secondary = Orange, background = Color(0xFFF4F6F9), surface = Color.White)) { Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) { Box(Modifier.fillMaxSize()) { Box(Modifier.fillMaxSize().then(if (syncState != "ok") Modifier.blur(16.dp) else Modifier)) { App(sp) }; NotifBanner(); SyncOverlay(); UpdateGate() } } } }
     }
 }
 
@@ -389,7 +400,7 @@ class MainActivity : ComponentActivity() {
                 Text(title, style = MaterialTheme.typography.titleMedium)
                 if (rich != null) Text(rich, color = MaterialTheme.colorScheme.onSurfaceVariant) else if (body.isNotEmpty()) Text(body, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 btns.forEach { (l, f) ->
-                    Button(f, Modifier.fillMaxWidth().height(56.dp).padding(top = 8.dp), shape = RoundedCornerShape(12.dp), enabled = btnEnabled, colors = ButtonDefaults.buttonColors(containerColor = Blue)) { Text(l) }
+                    Button(f, Modifier.fillMaxWidth().height(56.dp).padding(top = 8.dp), shape = RoundedCornerShape(12.dp), enabled = btnEnabled, colors = blueBtn()) { Text(l, fontWeight = FontWeight.Bold, color = Color.White) }
                 }
             }
         }
@@ -459,7 +470,7 @@ class MainActivity : ComponentActivity() {
                             }
                     }
                 }, Modifier.fillMaxWidth().height(56.dp).padding(top = 12.dp), shape = RoundedCornerShape(12.dp), enabled = !busy,
-                    colors = ButtonDefaults.buttonColors(containerColor = Orange)) {
+                    colors = orangeBtn()) {
                     if (busy) CircularProgressIndicator(Modifier.size(24.dp), color = Color.White, strokeWidth = 2.dp) else Text("LOGIN")
                 }
             }
@@ -475,7 +486,7 @@ class MainActivity : ComponentActivity() {
     val ctx = LocalContext.current
     fun logout(msg: String? = null) {
         sp.edit().clear().apply(); role = ""; name = ""; uid = ""; page = "home"; auth.signOut()
-        ctx.stopService(Intent(ctx, JobWatchService::class.java))
+        ctx.stopService(Intent(ctx, JobWatchService::class.java)); ctx.getSystemService(NotificationManager::class.java).cancel(77)
         if (msg != null) Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show()
     }
     LaunchedEffect(uid) {
@@ -512,7 +523,7 @@ class MainActivity : ComponentActivity() {
             Surface(Modifier.fillMaxHeight().width((LocalConfiguration.current.screenWidthDp * 0.45f).coerceIn(170f, 340f).dp), color = MaterialTheme.colorScheme.surface, shadowElevation = 8.dp) {
                 Column(Modifier.fillMaxHeight().statusBarsPadding().navigationBarsPadding()) {
                     Text("Mantone Catalogue", Modifier.padding(16.dp), style = MaterialTheme.typography.titleMedium)
-                    if (worker) NavigationDrawerItem(label = { Text("📜  Completed Jobs") }, selected = pg == "history", modifier = Modifier.padding(horizontal = 12.dp),
+                    if (worker) NavigationDrawerItem(label = { Text("📜  Job History") }, selected = pg == "history", modifier = Modifier.padding(horizontal = 12.dp),
                         onClick = { page = "history"; scope.launch { drawer.close() } })
                     if (adm) {
                         NavigationDrawerItem(label = { Text("🧾  Activity Logs") }, selected = pg == "logs", modifier = Modifier.padding(horizontal = 12.dp), onClick = { page = "logs"; scope.launch { drawer.close() } })
@@ -552,6 +563,10 @@ class MainActivity : ComponentActivity() {
 
 @Composable fun SettingsScreen() {
     val ctx = LocalContext.current
+    var tick by remember { mutableIntStateOf(0) }
+    val notifOn = remember(refreshTick, tick) { ctx.getSystemService(NotificationManager::class.java).areNotificationsEnabled() }
+    val notifSettings = { ctx.startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, ctx.packageName).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+    val askNotif = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted -> if (granted) notifWarn = false else notifSettings(); tick++ }
     var cur by remember { mutableStateOf("") }; var np by remember { mutableStateOf("") }; var cp by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }; var msg by remember { mutableStateOf("") }; var ok by remember { mutableStateOf(false) }
     Column(Modifier.verticalScroll(rememberScrollState())) {
@@ -560,6 +575,15 @@ class MainActivity : ComponentActivity() {
             Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("🌙  Dark mode", Modifier.weight(1f))
                 Switch(darkMode, { darkMode = it; ctx.getSharedPreferences("ui", Context.MODE_PRIVATE).edit().putBoolean("dark", it).apply() })
+            }
+        }
+        Card(Modifier.fillMaxWidth().padding(top = 12.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(2.dp)) {
+            Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("🔔  Job notifications")
+                    Text(if (notifOn) "Enabled" else "Disabled — you won't get job alerts", color = if (notifOn) Green else MaterialTheme.colorScheme.error)
+                }
+                if (!notifOn) Button({ if (Build.VERSION.SDK_INT >= 33) askNotif.launch(Manifest.permission.POST_NOTIFICATIONS) else notifSettings() }, colors = orangeBtn()) { Text("ENABLE") }
             }
         }
         Text("CHANGE PASSWORD", Modifier.padding(top = 24.dp, bottom = 8.dp), style = MaterialTheme.typography.titleMedium)
@@ -576,7 +600,7 @@ class MainActivity : ComponentActivity() {
                 np == cur -> { ok = false; msg = "The new password must be different" }
                 else -> { busy = true; msg = ""; changePassword(cur, np) { r -> busy = false; if (r == null) { ok = true; msg = "Password changed ✅"; cur = ""; np = ""; cp = "" } else { ok = false; msg = r } } }
             }
-        }, Modifier.fillMaxWidth().height(56.dp).padding(top = 8.dp), enabled = !busy, shape = RoundedCornerShape(12.dp), colors = ButtonDefaults.buttonColors(containerColor = Blue)) {
+        }, Modifier.fillMaxWidth().height(56.dp).padding(top = 8.dp), enabled = !busy, shape = RoundedCornerShape(12.dp), colors = blueBtn()) {
             if (busy) CircularProgressIndicator(Modifier.size(24.dp), color = Color.White, strokeWidth = 2.dp) else Text("CHANGE PASSWORD")
         }
     }
@@ -652,7 +676,7 @@ fun statusColor(s: String) = when (s) { "READY TO DISPATCH" -> Green; "DELIVERED
                         OutlinedButton({ editDlg = true }, Modifier.fillMaxWidth().padding(top = 12.dp), shape = RoundedCornerShape(12.dp)) { Text("✏️ EDIT JOB") }
                         OutlinedButton({ prioDlg = true }, Modifier.fillMaxWidth().padding(top = 8.dp), shape = RoundedCornerShape(12.dp)) { Text("PRIORITY: ${j.s("priority").ifEmpty { "Normal" }}  (tap to change)") }
                         Button({ if (j.b("hold")) resumeJob(j.s("_id"), who) else holdJob(j.s("_id"), who) }, Modifier.fillMaxWidth().padding(top = 12.dp), shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Yellow)) { Text(if (j.b("hold")) "▶ RESUME JOB" else "⏸ PUT ON HOLD") }
+                            colors = ButtonDefaults.buttonColors(containerColor = Yellow, contentColor = Color.Black)) { Text(if (j.b("hold")) "▶ RESUME JOB" else "⏸ PUT ON HOLD") }
                         OutlinedButton({ confirmCancel = true }, Modifier.fillMaxWidth().padding(top = 8.dp), shape = RoundedCornerShape(12.dp)) { Text("CANCEL JOB") }
                     }
                     if (canDel) Button({ confirmDel = true }, Modifier.fillMaxWidth().padding(top = 12.dp), shape = RoundedCornerShape(12.dp), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Text("DELETE JOB") }
@@ -683,7 +707,7 @@ fun statusColor(s: String) = when (s) { "READY TO DISPATCH" -> Green; "DELIVERED
                         Row { Stat("All jobs", sorted.size, Navy) { filter = "All jobs" }; Stat("In production", by("IN PRODUCTION").size, Blue) { filter = "IN PRODUCTION" } }
                         Row { Stat("Ready to dispatch", by("READY TO DISPATCH").size, Green) { filter = "READY TO DISPATCH" }; Stat("Delivered", by("DELIVERED").size, Grey) { filter = "DELIVERED" } }
                         Row { Stat("On hold", by("ON HOLD").size, Yellow) { filter = "ON HOLD" }; Stat("Cancelled", by("CANCELLED").size, Color(0xFFD32F2F)) { filter = "CANCELLED" } }
-                        Text("Tap a tile to see its jobs", Modifier.padding(top = 12.dp), color = Color.Gray)
+                        Text("Tap a tile to see its jobs", Modifier.fillMaxWidth().padding(top = 12.dp), color = Color.Gray, textAlign = TextAlign.Center)
                     }
                 } else {
                     val f = filter ?: ""
@@ -708,6 +732,11 @@ fun statusColor(s: String) = when (s) { "READY TO DISPATCH" -> Green; "DELIVERED
 // Worker: sees ONLY jobs whose current step belongs to their role
 @Composable fun WorkCard(j: M, who: String) {
     val hold = j.b("hold")
+    var confirm by remember { mutableStateOf(false) }
+    if (confirm) AlertDialog(onDismissRequest = { confirm = false }, title = { Text("Confirm ${curProc(j)} completed?") },
+        text = { Text("Job #${j.s("id")} ${j.s("jobName")} will move to the next step. This can't be undone.") },
+        confirmButton = { Button({ confirm = false; complete(j.s("id"), j.n("cur"), who) }, colors = blueBtn()) { Text("YES, COMPLETED", color = Color.White, fontWeight = FontWeight.Bold) } },
+        dismissButton = { TextButton({ confirm = false }) { Text("Cancel") } })
     val opts = listOfNotNull(if (j.b("lam")) "Lamination" else null, if (j.b("foil")) "Foil" else null, if (j.b("spot")) "Spot UV" else null,
         if (j.s("coating") != "None" && j.s("coating").isNotEmpty()) j.s("coating") else null).joinToString(" • ")
     val st = stepsOf(j)[j.n("cur").toInt()]
@@ -720,7 +749,7 @@ fun statusColor(s: String) = when (s) { "READY TO DISPATCH" -> Green; "DELIVERED
     }
     Item((if (hold) "⏸ " else "") + (if (urgent(j)) "🔥 " else "") + "#${j.s("id")} ${j.s("jobName")}", "",
         if (urgent(j) && !hold) Orange else statusColor(jstat(j)),
-        listOf((if (hold) "JOB ON HOLD" else "${curProc(j)} Completed") to { complete(j.s("id"), j.n("cur"), who) }), !hold, rich)
+        listOf((if (hold) "JOB ON HOLD" else "${curProc(j)} Completed") to { confirm = true }), !hold, rich)
 }
 
 // Worker: sees ONLY jobs whose current step belongs to their role. Sections appear only when they have jobs.
@@ -742,6 +771,8 @@ fun statusColor(s: String) = when (s) { "READY TO DISPATCH" -> Green; "DELIVERED
     var coating by remember { mutableStateOf("None") }; var cMenu by remember { mutableStateOf(false) }
     var lam by remember { mutableStateOf(false) }; var foil by remember { mutableStateOf(false) }; var spot by remember { mutableStateOf(false) }; var onHold by remember { mutableStateOf(false) }
     var priority by remember { mutableStateOf("Normal") }; var pMenu by remember { mutableStateOf(false) }
+    var popup by remember { mutableStateOf<String?>(null) }
+    DonePopup(popup) { popup = null }
     var busy by remember { mutableStateOf(false) }; var msg by remember { mutableStateOf("") }; var ok by remember { mutableStateOf(false) }
     LazyColumn {
         item {
@@ -783,12 +814,12 @@ fun statusColor(s: String) = when (s) { "READY TO DISPATCH" -> Green; "DELIVERED
                         busy = true; msg = ""
                         createJob(client.trim(), name.trim(), d, q, photos.toLongOrNull() ?: 0L, lam, foil, spot, coating, priority, onHold, who) { err ->
                             busy = false
-                            if (err == null) { ok = true; msg = if (onHold) "Job created ON HOLD ✅" else "Job created ✅ — sent to Printing"; client = ""; name = ""; qty = ""; photos = ""; design = null; coating = "None"; lam = false; foil = false; spot = false; onHold = false; priority = "Normal" }
+                            if (err == null) { msg = ""; popup = if (onHold) "Job created ON HOLD ✅" else "Job created ✅ — sent to Printing"; client = ""; name = ""; qty = ""; photos = ""; design = null; coating = "None"; lam = false; foil = false; spot = false; onHold = false; priority = "Normal" }
                             else { ok = false; msg = "Failed: $err" }
                         }
                     }
                 }
-            }, Modifier.fillMaxWidth().height(56.dp).padding(top = 8.dp), enabled = !busy, shape = RoundedCornerShape(12.dp), colors = ButtonDefaults.buttonColors(containerColor = Orange)) {
+            }, Modifier.fillMaxWidth().height(56.dp).padding(top = 8.dp), enabled = !busy, shape = RoundedCornerShape(12.dp), colors = orangeBtn()) {
                 if (busy) CircularProgressIndicator(Modifier.size(24.dp), color = Color.White, strokeWidth = 2.dp) else Text("CREATE JOB")
             }
         }
@@ -837,7 +868,7 @@ fun statusColor(s: String) = when (s) { "READY TO DISPATCH" -> Green; "DELIVERED
             if (open) {
                 if (u.s("name") == "admin") Text("Main admin account (locked)", color = Color.Gray)
                 else {
-                    Button(onEdit, Modifier.fillMaxWidth().height(52.dp).padding(top = 8.dp), shape = RoundedCornerShape(12.dp), colors = ButtonDefaults.buttonColors(containerColor = Orange)) { Text("EDIT ROLES") }
+                    Button(onEdit, Modifier.fillMaxWidth().height(52.dp).padding(top = 8.dp), shape = RoundedCornerShape(12.dp), colors = orangeBtn()) { Text("EDIT ROLES") }
                     OutlinedButton({ confirm = true }, Modifier.fillMaxWidth().height(52.dp).padding(top = 8.dp), shape = RoundedCornerShape(12.dp)) { Text("DELETE USER") }
                 }
             }
@@ -864,6 +895,9 @@ fun statusColor(s: String) = when (s) { "READY TO DISPATCH" -> Green; "DELIVERED
     var n by remember { mutableStateOf("") }; var ph by remember { mutableStateOf("") }; var p by remember { mutableStateOf("") }; var c by remember { mutableStateOf("") }; var sel by remember { mutableStateOf(setOf<String>()) }
     var busy by remember { mutableStateOf(false) }; var msg by remember { mutableStateOf("") }; var ok by remember { mutableStateOf(false) }
     var confirmAdd by remember { mutableStateOf(false) }
+    var popup by remember { mutableStateOf<String?>(null) }
+    var sub by remember { mutableStateOf(0) }
+    DonePopup(popup) { popup = null }
     var rolesDlg by remember { mutableStateOf(false) }
     if (rolesDlg) AlertDialog(onDismissRequest = { rolesDlg = false }, title = { Text("Select Roles") },
         text = { Column(Modifier.verticalScroll(rememberScrollState())) { RoleChecklist(sel) { sel = it } } },
@@ -877,13 +911,20 @@ fun statusColor(s: String) = when (s) { "READY TO DISPATCH" -> Green; "DELIVERED
             h.postDelayed({ if (!fin) { fin = true; busy = false; ok = false; msg = "No response from the server. The user is NOT saved to the cloud until you are online." } }, 12000)
             createAccount(n.trim(), normPhone(ph), p, ROLES.filter { it in sel }) { e ->
                 fin = true; h.removeCallbacksAndMessages(null); busy = false
-                if (e == null) { logEvent("Created user", who, target = n.trim(), detail = "Roles: " + ROLES.filter { it in sel }.joinToString(", ")); ok = true; msg = "User created ✅ Share the password with them now; it can't be viewed later"; n = ""; ph = ""; p = ""; c = ""; sel = setOf() }
+                if (e == null) { logEvent("Created user", who, target = n.trim(), detail = "Roles: " + ROLES.filter { it in sel }.joinToString(", ")); msg = ""; popup = "User created ✅\n\nShare the password with them now. It can't be viewed later."; n = ""; ph = ""; p = ""; c = ""; sel = setOf() }
                 else { ok = false; msg = e }
             }
         }) { Text("CREATE USER") } },
         dismissButton = { TextButton({ confirmAdd = false }) { Text("Cancel") } })
     LazyColumn {
         item {
+            TabRow(selectedTabIndex = sub) {
+                Tab(sub == 0, { sub = 0 }, text = { Text("Add New User") })
+                Tab(sub == 1, { sub = 1 }, text = { Text("Existing Users (${users.size})") })
+            }
+            Spacer(Modifier.height(8.dp))
+        }
+        if (sub == 0) item {
             Text("ADD USER", Modifier.padding(vertical = 8.dp), style = MaterialTheme.typography.titleMedium)
             OutlinedTextField(n, { n = it }, label = { Text("Full name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             OutlinedTextField(ph, { ph = phoneFilter(it) }, label = { Text("Phone number (login ID)") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone), modifier = Modifier.fillMaxWidth())
@@ -904,11 +945,14 @@ fun statusColor(s: String) = when (s) { "READY TO DISPATCH" -> Green; "DELIVERED
                     users.any { it.s("phone") == normPhone(ph) } -> { ok = false; msg = "That phone number already has an account" }
                     else -> { msg = ""; confirmAdd = true }
                 }
-            }, Modifier.fillMaxWidth().height(56.dp).padding(top = 8.dp), enabled = !busy, shape = RoundedCornerShape(12.dp), colors = ButtonDefaults.buttonColors(containerColor = Orange)) {
+            }, Modifier.fillMaxWidth().height(56.dp).padding(top = 8.dp), enabled = !busy, shape = RoundedCornerShape(12.dp), colors = orangeBtn()) {
                 if (busy) CircularProgressIndicator(Modifier.size(24.dp), color = Color.White, strokeWidth = 2.dp) else Text("ADD USER")
             }
         }
-        items(users.sortedBy { it.s("name") }) { u -> UserCard(u, who) { editing = u; editSel = rolesOf(u).toSet() } }
+        if (sub == 1) {
+            if (users.isEmpty()) item { Text("No users yet", Modifier.fillMaxWidth().padding(top = 40.dp), textAlign = TextAlign.Center, color = Color.Gray) }
+            items(users.sortedBy { it.s("name") }) { u -> UserCard(u, who) { editing = u; editSel = rolesOf(u).toSet() } }
+        }
     }
 }
 
@@ -924,7 +968,7 @@ fun statusColor(s: String) = when (s) { "READY TO DISPATCH" -> Green; "DELIVERED
             } else {
                 Text("Could not refresh", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
                 Text("Check your internet connection.", Modifier.padding(top = 4.dp, bottom = 16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Button({ refresh() }, Modifier.width(220.dp).height(52.dp), shape = RoundedCornerShape(12.dp), colors = ButtonDefaults.buttonColors(containerColor = Orange)) { Text("REFRESH AGAIN") }
+                Button({ refresh() }, Modifier.width(220.dp).height(52.dp), shape = RoundedCornerShape(12.dp), colors = orangeBtn()) { Text("REFRESH AGAIN") }
                 OutlinedButton({ (ctx as? Activity)?.finishAffinity() }, Modifier.width(220.dp).height(52.dp).padding(top = 8.dp), shape = RoundedCornerShape(12.dp)) { Text("EXIT") }
             }
         }
@@ -1040,7 +1084,7 @@ fun statusColor(s: String) = when (s) { "READY TO DISPATCH" -> Green; "DELIVERED
             Text("Mantone Catalogue", Modifier.padding(top = 16.dp), style = MaterialTheme.typography.titleLarge)
             Text("Version ${info.versionName} (${info.longVersionCode})", Modifier.padding(top = 4.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
             Button({ Updater.check() }, Modifier.padding(top = 24.dp).width(240.dp).height(52.dp), enabled = !Updater.checking, shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Blue)) {
+                colors = blueBtn()) {
                 if (Updater.checking) CircularProgressIndicator(Modifier.size(24.dp), color = Color.White, strokeWidth = 2.dp) else Text("CHECK FOR UPDATES")
             }
             if (Updater.checked && !Updater.checking)
@@ -1068,8 +1112,20 @@ fun statusColor(s: String) = when (s) { "READY TO DISPATCH" -> Green; "DELIVERED
             if (Updater.downloading) {
                 LinearProgressIndicator(progress = { Updater.progress / 100f }, Modifier.padding(top = 20.dp).fillMaxWidth())
                 Text("Downloading… ${Updater.progress}%", Modifier.padding(top = 8.dp))
-            } else Button({ Updater.install(ctx) }, Modifier.padding(top = 20.dp).fillMaxWidth().height(52.dp), shape = RoundedCornerShape(12.dp), colors = ButtonDefaults.buttonColors(containerColor = Blue)) { Text("DOWNLOAD & INSTALL") }
+            } else Button({ Updater.install(ctx) }, Modifier.padding(top = 20.dp).fillMaxWidth().height(52.dp), shape = RoundedCornerShape(12.dp), colors = blueBtn()) { Text("DOWNLOAD & INSTALL") }
             if (Updater.error.isNotEmpty()) Text(Updater.error, Modifier.padding(top = 8.dp), color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center)
+        }
+    }
+}
+
+@Composable fun NotifBanner() {
+    if (!notifWarn) return
+    Box(Modifier.fillMaxWidth().statusBarsPadding().padding(8.dp), contentAlignment = Alignment.TopCenter) {
+        Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFD32F2F)), elevation = CardDefaults.cardElevation(8.dp)) {
+            Row(Modifier.padding(start = 14.dp, top = 2.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Notification permission denied. You will not receive Job Notifications.", Modifier.weight(1f), color = Color.White)
+                TextButton({ notifWarn = false }) { Text("✕", color = Color.White, fontSize = 20.sp) }
+            }
         }
     }
 }
