@@ -18,8 +18,8 @@ android {
         applicationId = "com.mantone.catalogue"
         minSdk = 28   // Android 9
         targetSdk = 34
-        versionCode = 5
-        versionName = "1.1.3"
+        versionCode = 6
+        versionName = "1.1.4"
         buildConfigField("String", "UPDATE_URL", "\"https://github.com/$repo/releases/latest/download/version.json\"")
     }
     signingConfigs {
