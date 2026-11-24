@@ -93,6 +93,21 @@ class JobWatchService : Service() {
             notifyUser(this, ("Q" + it.s("id")).hashCode(), "✏️ Quantity changed — #${it.s("id")} ${it.s("jobName")}", it.s("qtyChange"))
             done.add("Q:${it.s("id")}:${it.n("qtyChangeAt")}")
         }
+        // Movement role: alert after EVERY completed step of any job (counted from the moment this user first started watching)
+        if ("Movement" in roles) {
+            val mvKey = "mv_$who"
+            val since = store.getLong(mvKey, 0L).let { v -> if (v > 0L) v else now().also { store.edit().putLong(mvKey, it).apply() } }
+            val steps = jobs.filter { !it.b("cancelled") }.flatMap { j -> stepsOf(j).withIndex().filter { it.value.n("done") >= since }.map { Triple(j, it.index, it.value) } }
+                .filter { "M:${it.first.s("id")}:${it.second}" !in done }.sortedBy { it.third.n("done") }
+            if (steps.size > 3) notifyUser(this, 2, "Steps completed", "${steps.size} steps were completed. Open the app to see each job's status.")
+            else steps.forEach { (j, i, st) ->
+                val next = stepsOf(j).getOrNull(i + 1)?.s("proc")
+                notifyUser(this, ("M" + j.s("id") + i).hashCode(), (if (urgent(j)) "🔥 " else "") + "${st.s("proc")} Completed — #${j.s("id")} ${j.s("jobName")}",
+                    "Client: ${j.s("client")}\nDesign ${j.s("design")} | Qty ${j.n("qty")} | Photos ${j.n("photos")}" + optsOf(j).let { if (it.isNotEmpty()) "\n$it" else "" } +
+                        "\nCompleted by ${st.s("by")} • ${ts(st.n("done"))}\n" + (if (next != null) "Next: $next" else "Job delivered ✅"))
+            }
+            steps.forEach { done.add("M:${it.first.s("id")}:${it.second}") }
+        }
         store.edit().putStringSet(k, done).apply()
         repost()   // job alerts must not push it out of the tray
     }

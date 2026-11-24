@@ -11,6 +11,7 @@ import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.widget.Toast
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.verticalScroll
 import com.google.firebase.firestore.MetadataChanges
@@ -194,6 +195,7 @@ fun changePassword(cur: String, new: String, cb: (String?) -> Unit) {
         .addOnSuccessListener { u.updatePassword(new).addOnSuccessListener { cb(null) }.addOnFailureListener { cb("Could not change password: ${it.message}") } }
         .addOnFailureListener { cb("Current password is incorrect") }
 }
+@Composable fun swColors() = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = Blue, checkedBorderColor = Blue, uncheckedThumbColor = Color(0xFFB0B8C4), uncheckedTrackColor = MaterialTheme.colorScheme.surfaceVariant, uncheckedBorderColor = MaterialTheme.colorScheme.outline)
 @Composable fun blueBtn() = ButtonDefaults.buttonColors(containerColor = Blue, contentColor = Color.White, disabledContainerColor = Grey, disabledContentColor = Color.White)
 @Composable fun orangeBtn() = ButtonDefaults.buttonColors(containerColor = Orange, contentColor = Color.White, disabledContainerColor = Grey, disabledContentColor = Color.White)
 @Composable fun DonePopup(text: String?, onClose: () -> Unit) {
@@ -220,6 +222,22 @@ fun createAccount(name: String, phone: String, password: String, roles: List<Str
         }
 }
 
+fun lightScheme() = lightColorScheme(
+    primary = Navy, onPrimary = Color.White, primaryContainer = Color(0xFFD6E4F5), onPrimaryContainer = Navy,
+    secondary = Orange, onSecondary = Color.White, secondaryContainer = Color(0xFFD6E4F5), onSecondaryContainer = Navy,
+    tertiary = Blue, onTertiary = Color.White, tertiaryContainer = Color(0xFFD6E4F5), onTertiaryContainer = Navy,
+    background = Color(0xFFF4F6F9), onBackground = Color(0xFF1B1F24), surface = Color.White, onSurface = Color(0xFF1B1F24),
+    surfaceVariant = Color(0xFFE3E8EF), onSurfaceVariant = Color(0xFF44505F), outline = Color(0xFF7A8696), outlineVariant = Color(0xFFCBD3DD), surfaceTint = Navy,
+    surfaceContainerLowest = Color.White, surfaceContainerLow = Color(0xFFF7F9FC), surfaceContainer = Color(0xFFF0F3F8), surfaceContainerHigh = Color(0xFFEAEFF5), surfaceContainerHighest = Color(0xFFE3E8EF))
+fun darkScheme() = darkColorScheme(
+    primary = Color(0xFF90CAF9), onPrimary = Color(0xFF0B2A47), primaryContainer = Color(0xFF1F3A5F), onPrimaryContainer = Color(0xFFD6E4F5),
+    secondary = Orange, onSecondary = Color.White, secondaryContainer = Color(0xFF2B3F57), onSecondaryContainer = Color(0xFFD6E4F5),
+    tertiary = Blue, onTertiary = Color.White, tertiaryContainer = Color(0xFF1F3A5F), onTertiaryContainer = Color(0xFFD6E4F5),
+    background = Color(0xFF121417), onBackground = Color(0xFFE6EAEF), surface = Color(0xFF1E2227), onSurface = Color(0xFFE6EAEF),
+    surfaceVariant = Color(0xFF2A3038), onSurfaceVariant = Color(0xFFB8C2CF), outline = Color(0xFF7D8896), outlineVariant = Color(0xFF3A424C), surfaceTint = Color(0xFF90CAF9),
+    surfaceContainerLowest = Color(0xFF0E1013), surfaceContainerLow = Color(0xFF1A1E23), surfaceContainer = Color(0xFF1E2227), surfaceContainerHigh = Color(0xFF262B32), surfaceContainerHighest = Color(0xFF2E343C))
+var freshLaunch = false                 // true only for a brand-new launch (not resume / rotation)
+var notifAsked by mutableStateOf(false) // notification permission question finished for this launch
 var notifWarn by mutableStateOf(false)   // shown once per fresh launch when notifications are blocked
 var darkMode by mutableStateOf(false)
 var jobsReady by mutableStateOf(false)   // true after the first jobs snapshot (avoids notification spam on login)
@@ -228,12 +246,12 @@ fun notifyUser(ctx: Context, id: Int, title: String, text: String) {
     val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
     nm.createNotificationChannel(android.app.NotificationChannel("jobs", "Job alerts", NotificationManager.IMPORTANCE_HIGH))
     val pi = PendingIntent.getActivity(ctx, 0, Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP), PendingIntent.FLAG_IMMUTABLE)
-    nm.notify(id, Notification.Builder(ctx, "jobs").setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle(title).setContentText(text)
+    nm.notify(id, Notification.Builder(ctx, "jobs").setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle(title).setContentText(text.lineSequence().first()).setStyle(Notification.BigTextStyle().bigText(text))
         .setContentIntent(pi).setAutoCancel(true).build())
 }
 
 val WORKER_ROLES = listOf("Printing", "Cutting", "Delivery", "Lamination", "Foil", "Spot UV", "Binding", "Packing")
-val ROLES = listOf("Admin", "Supervisor", "Printing Manager") + WORKER_ROLES
+val ROLES = listOf("Admin", "Supervisor", "Printing Manager", "Movement") + WORKER_ROLES
 val Navy = Color(0xFF1F3A5F); val Orange = Color(0xFFE67E22); val Green = Color(0xFF388E3C); val Grey = Color(0xFF757575); val Blue = Color(0xFF1E88E5); val Yellow = Color(0xFFFBC02D)
 fun isAdmin(r: List<String>) = "Admin" in r
 // A user can hold several roles. Old single-role users still work.
@@ -290,6 +308,8 @@ fun restoreJob(id: String, who: String) {
     logEvent("Restored job", who, id, detail = "Restored with all progress")
 }
 fun purgeJob(id: String, who: String) { db.collection("deletedJobs").document(id).delete().track(); logEvent("Deleted permanently", who, id) }
+fun optsOf(j: M) = listOfNotNull(if (j.b("lam")) "Lamination" else null, if (j.b("foil")) "Foil" else null, if (j.b("spot")) "Spot UV" else null,
+    if (j.s("coating") != "None" && j.s("coating").isNotEmpty()) j.s("coating") else null).joinToString(" • ")
 fun urgent(j: M) = j.s("priority") == "Urgent"
 fun setPriority(id: String, p: String, who: String) { db.collection("jobs").document(id).update("priority", p).track(); logEvent("Changed priority", who, id, detail = "→ $p") }
 fun jstat(j: M) = if (j.b("cancelled")) "CANCELLED" else if (j.b("hold")) "ON HOLD" else j.s("status")
@@ -374,21 +394,15 @@ fun resumeJob(id: String, who: String) {
 class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume(); refresh()
-        if (!(getSharedPreferences("s", MODE_PRIVATE).getString("u", "") ?: "").isEmpty()) startForegroundService(Intent(this, JobWatchService::class.java))
+        if (notifAsked && !(getSharedPreferences("s", MODE_PRIVATE).getString("u", "") ?: "").isEmpty()) startForegroundService(Intent(this, JobWatchService::class.java))
     }   // fresh live connection every time the app comes to the front
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         appCtx = applicationContext
         val sp = getSharedPreferences("s", MODE_PRIVATE)
-        val nm = getSystemService(NotificationManager::class.java)
-        if (savedInstanceState == null) {   // fresh launch only (not when the app is just brought back from minimized, or rotated)
-            if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
-                registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted -> notifWarn = !granted || !nm.areNotificationsEnabled() }.launch(Manifest.permission.POST_NOTIFICATIONS)
-            else notifWarn = !nm.areNotificationsEnabled()
-        }
+        if (savedInstanceState == null) { freshLaunch = true; notifAsked = false }
         darkMode = getSharedPreferences("ui", MODE_PRIVATE).getBoolean("dark", false)
-        setContent { MaterialTheme(colorScheme = if (darkMode) darkColorScheme(primary = Color(0xFF90CAF9), secondary = Orange, background = Color(0xFF121417), surface = Color(0xFF1E2227))
-            else lightColorScheme(primary = Navy, secondary = Orange, background = Color(0xFFF4F6F9), surface = Color.White)) { Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) { Box(Modifier.fillMaxSize()) { Box(Modifier.fillMaxSize().then(if (syncState != "ok") Modifier.blur(16.dp) else Modifier)) { App(sp) }; NotifBanner(); SyncOverlay(); UpdateGate() } } } }
+        setContent { MaterialTheme(colorScheme = if (darkMode) darkScheme() else lightScheme()) { Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) { Box(Modifier.fillMaxSize()) { Box(Modifier.fillMaxSize().then(if (syncState != "ok") Modifier.blur(16.dp) else Modifier)) { App(sp) }; NotifBanner(); SyncOverlay(); UpdateGate() } } } }
     }
 }
 
@@ -418,11 +432,12 @@ class MainActivity : ComponentActivity() {
 
 @Composable fun Login(onOk: (String, String, String, String) -> Unit) {
     var n by remember { mutableStateOf("") }; var p by remember { mutableStateOf("") }; var err by remember { mutableStateOf("") }; var busy by remember { mutableStateOf(false) }
-    Column(Modifier.fillMaxSize().background(Navy).padding(horizontal = 24.dp + sidePad(480.dp), vertical = 24.dp), verticalArrangement = Arrangement.Center) {
-        Text("MANTONE", style = MaterialTheme.typography.headlineLarge, color = Color.White)
-        Text("Catalogue Flow", style = MaterialTheme.typography.titleLarge, color = Color(0xFFFFB74D))
+    Box(Modifier.fillMaxSize().background(Navy)) {
+    Column(Modifier.fillMaxSize().padding(start = 24.dp + sidePad(480.dp), end = 24.dp + sidePad(480.dp), top = 24.dp, bottom = 110.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+        Image(painterResource(R.drawable.ic_logo), "Mantone Catalogue logo", Modifier.size(104.dp))
+        Text("Mantone Catalogue", Modifier.padding(top = 12.dp), style = MaterialTheme.typography.headlineSmall, color = Color.White, textAlign = TextAlign.Center)
         Spacer(Modifier.height(24.dp))
-        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+        Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
             Column(Modifier.padding(16.dp)) {
                 OutlinedTextField(n, { n = phoneFilter(it) }, label = { Text("Phone number") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone), modifier = Modifier.fillMaxWidth())
                 Spacer(Modifier.height(8.dp))
@@ -476,6 +491,8 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+    LoginFooter(Modifier.align(Alignment.BottomCenter))
+    }
 }
 
 @Composable fun App(sp: SharedPreferences) {
@@ -489,10 +506,23 @@ class MainActivity : ComponentActivity() {
         ctx.stopService(Intent(ctx, JobWatchService::class.java)); ctx.getSystemService(NotificationManager::class.java).cancel(77)
         if (msg != null) Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show()
     }
-    LaunchedEffect(uid) {
+    LaunchedEffect(uid, notifAsked) {
         if (uid.isEmpty()) { if (role.isNotEmpty()) logout() }   // old session without an account id: sign in again
         else if (auth.currentUser == null) logout()
-        else ctx.startForegroundService(Intent(ctx, JobWatchService::class.java))
+        else if (notifAsked) ctx.startForegroundService(Intent(ctx, JobWatchService::class.java))
+    }
+    val askLaunch = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        notifWarn = !granted || !ctx.getSystemService(NotificationManager::class.java).areNotificationsEnabled(); notifAsked = true
+    }
+    LaunchedEffect(uid, syncState, Updater.checked) {   // ask for notifications only once the app has fully loaded and the user is logged in
+        if (uid.isNotEmpty() && syncState == "ok" && Updater.checked && !Updater.required && !notifAsked) {
+            if (freshLaunch) {
+                delay(1200)
+                freshLaunch = false
+                if (Build.VERSION.SDK_INT >= 33 && ctx.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) askLaunch.launch(Manifest.permission.POST_NOTIFICATIONS)
+                else { notifWarn = !ctx.getSystemService(NotificationManager::class.java).areNotificationsEnabled(); notifAsked = true }
+            } else notifAsked = true
+        }
     }
     DisposableEffect(uid) {
         if (uid.isEmpty()) return@DisposableEffect onDispose { }
@@ -553,7 +583,7 @@ class MainActivity : ComponentActivity() {
                         "history" -> History(jobs, name)
                         "logs" -> Logs()
                         "trash" -> Trash(name)
-                        else -> if (manager) Manage(jobs, roles, name) else Worker(roles, jobs, name)
+                        else -> if (manager) Manage(jobs, roles, name) else if ("Movement" in roles && worker) MoveWork(jobs, roles, name) else if ("Movement" in roles) MovementBoard(jobs) else Worker(roles, jobs, name)
                     }
                 }
             }
@@ -574,15 +604,13 @@ class MainActivity : ComponentActivity() {
         Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(2.dp)) {
             Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("🌙  Dark mode", Modifier.weight(1f))
-                Switch(darkMode, { darkMode = it; ctx.getSharedPreferences("ui", Context.MODE_PRIVATE).edit().putBoolean("dark", it).apply() })
+                Switch(darkMode, { darkMode = it; ctx.getSharedPreferences("ui", Context.MODE_PRIVATE).edit().putBoolean("dark", it).apply() }, colors = swColors())
             }
         }
         Card(Modifier.fillMaxWidth().padding(top = 12.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(2.dp)) {
             Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("🔔  Job notifications")
-                    Text(if (notifOn) "Enabled" else "Disabled — you won't get job alerts", color = if (notifOn) Green else MaterialTheme.colorScheme.error)
-                }
+                Text("🔔  Job notifications", Modifier.weight(1f))
+                if (notifOn) Text("Enabled", color = Green, fontWeight = FontWeight.Bold)
                 if (!notifOn) Button({ if (Build.VERSION.SDK_INT >= 33) askNotif.launch(Manifest.permission.POST_NOTIFICATIONS) else notifSettings() }, colors = orangeBtn()) { Text("ENABLE") }
             }
         }
@@ -690,7 +718,7 @@ fun statusColor(s: String) = when (s) { "READY TO DISPATCH" -> Green; "DELIVERED
     val isAdm = "Admin" in roles
     val canCreate = isAdm || "Printing Manager" in roles
     val worker = roles.any { it in WORKER_ROLES }
-    val tabs = buildList { add("📊" to "Home"); add("📋" to "Jobs"); if (worker) add("🛠" to "My Tasks"); if (canCreate) add("➕" to "New"); if (isAdm) add("👥" to "Users") }
+    val tabs = buildList { add("📊" to "Home"); add("📋" to "Jobs"); if (worker) add("🛠" to "My Tasks"); if ("Movement" in roles) add("🚚" to "Movement"); if (canCreate) add("➕" to "New"); if (isAdm) add("👥" to "Users") }
     var sel by remember { mutableStateOf("Home") }
     val tab = if (tabs.any { it.second == sel }) sel else "Home"
     var filter by remember { mutableStateOf<String?>(null) }
@@ -721,11 +749,12 @@ fun statusColor(s: String) = when (s) { "READY TO DISPATCH" -> Green; "DELIVERED
                 }
                 "Jobs" -> if (sorted.isEmpty()) empty() else LazyColumn { items(sorted) { AdminJob(it, roles, who) } }
                 "My Tasks" -> Worker(roles, jobs, who)
+                "Movement" -> MovementBoard(jobs)
                 "New" -> NewJob(who)
                 else -> Users(who)
             }
         }
-        NavigationBar { tabs.forEach { (e, l) -> NavigationBarItem(tab == l, { sel = l; filter = null }, { Text(e) }, label = { Text(l) }) } }
+        NavigationBar(containerColor = MaterialTheme.colorScheme.surface) { tabs.forEach { (e, l) -> NavigationBarItem(tab == l, { sel = l; filter = null }, { Text(e) }, label = { Text(l) }) } }
     }
 }
 
@@ -796,10 +825,10 @@ fun statusColor(s: String) = when (s) { "READY TO DISPATCH" -> Green; "DELIVERED
                 OutlinedButton({ pMenu = true }, Modifier.fillMaxWidth().height(56.dp)) { Text("Priority: $priority") }
                 if (pMenu) PickDialog("Select Priority", listOf("Urgent", "Normal"), 1, { priority = it; pMenu = false }) { pMenu = false }
             }
-            Row(verticalAlignment = Alignment.CenterVertically) { Switch(lam, { lam = it }); Text("  Lamination") }
-            Row(verticalAlignment = Alignment.CenterVertically) { Switch(foil, { foil = it }); Text("  Foil") }
-            Row(verticalAlignment = Alignment.CenterVertically) { Switch(spot, { spot = it }); Text("  SPOT UV") }
-            Row(verticalAlignment = Alignment.CenterVertically) { Switch(onHold, { onHold = it }); Text("  Create on hold (won't reach Printing)") }
+            Row(verticalAlignment = Alignment.CenterVertically) { Switch(lam, { lam = it }, colors = swColors()); Text("  Lamination") }
+            Row(verticalAlignment = Alignment.CenterVertically) { Switch(foil, { foil = it }, colors = swColors()); Text("  Foil") }
+            Row(verticalAlignment = Alignment.CenterVertically) { Switch(spot, { spot = it }, colors = swColors()); Text("  SPOT UV") }
+            Row(verticalAlignment = Alignment.CenterVertically) { Switch(onHold, { onHold = it }, colors = swColors()); Text("  Create on hold (won't reach Printing)") }
             if (msg.isNotEmpty()) Text(msg, color = if (ok) Green else MaterialTheme.colorScheme.error)
             Button({
                 val q = qty.toLongOrNull() ?: 0L
@@ -1092,9 +1121,7 @@ fun statusColor(s: String) = when (s) { "READY TO DISPATCH" -> Green; "DELIVERED
                     color = if (Updater.failed) MaterialTheme.colorScheme.error else Green)
         }
         Column(Modifier.align(Alignment.BottomCenter).padding(bottom = 20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("Made With ❤️", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text("By", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text("Ballava", style = MaterialTheme.typography.titleMedium)
+            Credits(MaterialTheme.colorScheme.onSurfaceVariant, MaterialTheme.colorScheme.onSurface)
         }
     }
 }
@@ -1119,6 +1146,7 @@ fun statusColor(s: String) = when (s) { "READY TO DISPATCH" -> Green; "DELIVERED
 }
 
 @Composable fun NotifBanner() {
+    LaunchedEffect(notifWarn) { if (notifWarn) { delay(8000); notifWarn = false } }   // closes itself after 8 seconds
     if (!notifWarn) return
     Box(Modifier.fillMaxWidth().statusBarsPadding().padding(8.dp), contentAlignment = Alignment.TopCenter) {
         Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFD32F2F)), elevation = CardDefaults.cardElevation(8.dp)) {
@@ -1127,5 +1155,73 @@ fun statusColor(s: String) = when (s) { "READY TO DISPATCH" -> Green; "DELIVERED
                 TextButton({ notifWarn = false }) { Text("✕", color = Color.White, fontSize = 20.sp) }
             }
         }
+    }
+}
+
+// "Made With ❤️ by" on line 1, the name on line 2
+@Composable fun Credits(color: Color, nameColor: Color) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text("Made With ❤️ by", color = color)
+        Text("Ballava", color = nameColor, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable fun LoginFooter(m: Modifier) {
+    val ctx = LocalContext.current
+    val v = remember { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName ?: "" }
+    Column(m.padding(bottom = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Text("V$v", color = Color(0xFFB0BEC5), fontSize = 12.sp)
+        Spacer(Modifier.height(6.dp))
+        Credits(Color(0xFFB0BEC5), Color.White)
+    }
+}
+
+// ---- Movement role: read-only board showing where every job is ----
+@Composable fun MoveCard(j: M) {
+    var open by remember { mutableStateOf(false) }
+    val done = stepsOf(j).withIndex().filter { it.value.n("done") > 0 }
+    val last = done.maxByOrNull { it.value.n("done") }
+    val opts = optsOf(j)
+    Card(Modifier.fillMaxWidth().padding(vertical = 4.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(2.dp)) {
+        Row(Modifier.height(IntrinsicSize.Min)) {
+            Box(Modifier.width(8.dp).fillMaxHeight().background(statusColor(jstat(j))))
+            Column(Modifier.padding(12.dp).weight(1f)) {
+                Text((if (urgent(j)) "🔥 " else "") + "#${j.s("id")}  •  ${j.s("client")}", style = MaterialTheme.typography.titleMedium)
+                Text(j.s("jobName"), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Design ${j.s("design")} | Qty ${j.n("qty")} | Photos ${j.n("photos")}" + (if (opts.isNotEmpty()) "\n$opts" else ""), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(if (last != null) "${last.value.s("proc")} Completed" else "Not started yet", Modifier.padding(top = 10.dp), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                if (j.b("hold")) Text("⏸ ON HOLD by ${j.s("holdBy").ifEmpty { "—" }} • ${ts(j.n("holdAt"))}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (done.isNotEmpty()) Text((if (open) "▾ " else "▸ ") + "Completed steps (${done.size}) — tap to ${if (open) "hide" else "see details"}",
+                    Modifier.fillMaxWidth().clickable { open = !open }.padding(vertical = 10.dp), color = MaterialTheme.colorScheme.primary)
+                if (open) done.sortedBy { it.value.n("done") }.forEach { (_, s) ->
+                    Text("✅ ${s.s("proc")}\nReceived ${ts(s.n("at"))}\nCompleted ${ts(s.n("done"))} by ${s.s("by").ifEmpty { "—" }}\nTime taken: ${dur((s.n("done") - s.n("at")) / 60000)}",
+                        Modifier.padding(start = 8.dp, bottom = 8.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Text(buildAnnotatedString { append("Current step: "); withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(curProc(j)) } }, Modifier.padding(top = if (done.isEmpty()) 8.dp else 0.dp))
+            }
+        }
+    }
+}
+
+@Composable fun MovementBoard(jobs: List<M>) {
+    val list = jobs.filter { !it.b("cancelled") && it.s("status") != "DELIVERED" }
+        .sortedByDescending { j -> maxOf(stepsOf(j).maxOfOrNull { it.n("done") } ?: 0L, j.n("createdAt")) }
+    if (list.isEmpty()) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Text("No Jobs In Progress", style = MaterialTheme.typography.titleMedium, color = Color.Gray, textAlign = TextAlign.Center)
+    } else LazyColumn {
+        item { Text("Jobs in progress • ${list.size}", Modifier.padding(vertical = 8.dp), style = MaterialTheme.typography.titleMedium) }
+        items(list) { MoveCard(it) }
+    }
+}
+
+// Movement + worker roles on the same person: two tabs
+@Composable fun MoveWork(jobs: List<M>, roles: List<String>, who: String) {
+    var tab by remember { mutableStateOf(0) }
+    Column {
+        TabRow(selectedTabIndex = tab) {
+            Tab(tab == 0, { tab = 0 }, text = { Text("🚚 Movement") })
+            Tab(tab == 1, { tab = 1 }, text = { Text("🛠 My Tasks") })
+        }
+        Box(Modifier.weight(1f)) { if (tab == 0) MovementBoard(jobs) else Worker(roles, jobs, who) }
     }
 }

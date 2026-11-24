@@ -1,12 +1,20 @@
 # Mantone Catalogue - release script (GitHub Releases)
-# Usage:  powershell -ExecutionPolicy Bypass -File .\release.ps1 -Notes "What changed" [-Bump patch|minor|major]
+# Usage:  powershell -ExecutionPolicy Bypass -File .\release.ps1 -NotesFile .\notes.txt [-Bump patch|minor|major]
+#     or:  powershell -ExecutionPolicy Bypass -File .\release.ps1 -Notes "One line" 
 param(
     [string]$Notes = "Bug fixes and improvements",
+    [string]$NotesFile = "",
     [ValidateSet("patch", "minor", "major")][string]$Bump = "patch"
 )
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 function Fail($m) { Write-Host "ERROR: $m" -ForegroundColor Red; exit 1 }
+
+# ---- multi-line change log: pass -NotesFile .\notes.txt (one change per line)
+if ($NotesFile) {
+    if (-not (Test-Path $NotesFile)) { Fail "Notes file not found: $NotesFile" }
+    $Notes = ([IO.File]::ReadAllText((Resolve-Path $NotesFile).Path)).Trim()
+}
 
 # ---- find Java automatically (Android Studio ships one) so JAVA_HOME does not need to be set
 function Test-Java($dir) { $dir -and (Test-Path (Join-Path $dir "bin\java.exe")) }
