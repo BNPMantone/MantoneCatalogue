@@ -247,7 +247,7 @@ fun notifyUser(ctx: Context, id: Int, title: String, text: String) {
     nm.createNotificationChannel(android.app.NotificationChannel("jobs", "Job alerts", NotificationManager.IMPORTANCE_HIGH))
     val pi = PendingIntent.getActivity(ctx, 0, Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP), PendingIntent.FLAG_IMMUTABLE)
     nm.notify(id, Notification.Builder(ctx, "jobs").setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle(title).setContentText(text.lineSequence().first()).setStyle(Notification.BigTextStyle().bigText(text))
-        .setContentIntent(pi).setAutoCancel(true).build())
+        .setContentIntent(pi).setAutoCancel(true).setVisibility(Notification.VISIBILITY_PRIVATE).build())
 }
 
 val WORKER_ROLES = listOf("Printing", "Cutting", "Delivery", "Lamination", "Foil", "Spot UV", "Binding", "Packing")
