@@ -464,9 +464,12 @@ class MainActivity : ComponentActivity() {
                                         else {
                                             // ONE session per account: writing a new sessionId signs this user out of every other device
                                             val sid = UUID.randomUUID().toString()
-                                            db.collection("users").document(id).update(mapOf("sessionId" to sid, "sessionAt" to now(), "device" to Build.MODEL))
-                                                .addOnSuccessListener { busy = false; onOk(d.getString("name") ?: n.trim(), rolesOf(d.data ?: mapOf()).joinToString(","), id, sid) }
-                                                .addOnFailureListener { busy = false; auth.signOut(); err = "Could not start your session. Try again." }
+                                            r.user!!.getIdToken(false).addOnSuccessListener { tr ->
+                                                // minAuth = the time THIS sign-in happened. The server rejects every older sign-in of this account.
+                                                db.collection("users").document(id).update(mapOf("sessionId" to sid, "sessionAt" to now(), "device" to Build.MODEL, "minAuth" to tr.authTimestamp))
+                                                    .addOnSuccessListener { busy = false; onOk(d.getString("name") ?: n.trim(), rolesOf(d.data ?: mapOf()).joinToString(","), id, sid) }
+                                                    .addOnFailureListener { busy = false; auth.signOut(); err = "Could not start your session. Try again." }
+                                            }.addOnFailureListener { busy = false; auth.signOut(); err = "Could not start your session. Try again." }
                                         }
                                     }.addOnFailureListener {
                                         if (finished) return@addOnFailureListener
@@ -501,10 +504,22 @@ class MainActivity : ComponentActivity() {
     var uid by remember { mutableStateOf(sp.getString("u", "") ?: "") }
     var page by remember { mutableStateOf("home") }
     val ctx = LocalContext.current
-    fun logout(msg: String? = null) {
-        sp.edit().clear().apply(); role = ""; name = ""; uid = ""; page = "home"; auth.signOut()
-        ctx.stopService(Intent(ctx, JobWatchService::class.java)); ctx.getSystemService(NotificationManager::class.java).cancel(77)
-        if (msg != null) Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show()
+    fun logout(msg: String? = null, server: Boolean = false) {
+        val me = uid; var finished = false
+        fun finish() {
+            if (finished) return
+            finished = true
+            sp.edit().clear().apply(); role = ""; name = ""; uid = ""; page = "home"; auth.signOut()
+            ctx.stopService(Intent(ctx, JobWatchService::class.java)); ctx.getSystemService(NotificationManager::class.java).cancel(77)
+            if (msg != null) Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show()
+        }
+        val u = auth.currentUser
+        if (server && u != null && me.isNotEmpty()) {
+            // Server-side logout: raise minAuth above this sign-in, so every token this phone (or a copy of it) holds is refused by Firestore from now on
+            u.getIdToken(false).addOnSuccessListener { tr -> db.collection("users").document(me).update("minAuth", tr.authTimestamp + 1).addOnCompleteListener { finish() } }
+                .addOnFailureListener { finish() }
+            Handler(Looper.getMainLooper()).postDelayed({ finish() }, 4000)   // offline: still log out on this phone, never hang
+        } else finish()
     }
     LaunchedEffect(uid, notifAsked) {
         if (uid.isEmpty()) { if (role.isNotEmpty()) logout() }   // old session without an account id: sign in again
@@ -527,7 +542,7 @@ class MainActivity : ComponentActivity() {
     DisposableEffect(uid) {
         if (uid.isEmpty()) return@DisposableEffect onDispose { }
         val r = db.collection("users").document(uid).addSnapshotListener(MetadataChanges.INCLUDE) { s, e ->
-            if (e != null && e.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) { logout("Your account was removed. You have been logged out."); return@addSnapshotListener }
+            if (e != null && e.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) { logout("You were signed out. This account was used on another device or was removed."); return@addSnapshotListener }
             if (s == null) return@addSnapshotListener
             if (s.exists()) {
                 val ds = s.getString("sessionId"); val mine = sp.getString("sid", "") ?: ""
@@ -564,7 +579,7 @@ class MainActivity : ComponentActivity() {
                     NavigationDrawerItem(label = { Text("ℹ️  About") }, selected = pg == "about", modifier = Modifier.padding(horizontal = 12.dp), onClick = { page = "about"; scope.launch { drawer.close() } })
                     Spacer(Modifier.weight(1f))
                     NavigationDrawerItem(label = { Text("🚪  Logout") }, selected = false, modifier = Modifier.padding(12.dp),
-                        onClick = { scope.launch { drawer.close() }; logout() })
+                        onClick = { scope.launch { drawer.close() }; logout(server = true) })
                 }
             }
         }) {
