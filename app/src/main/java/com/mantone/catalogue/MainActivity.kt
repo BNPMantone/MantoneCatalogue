@@ -196,6 +196,8 @@ fun changePassword(cur: String, new: String, cb: (String?) -> Unit) {
         .addOnFailureListener { cb("Current password is incorrect") }
 }
 @Composable fun swColors() = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = Blue, checkedBorderColor = Blue, uncheckedThumbColor = Color(0xFFB0B8C4), uncheckedTrackColor = MaterialTheme.colorScheme.surfaceVariant, uncheckedBorderColor = MaterialTheme.colorScheme.outline)
+// solid, bright red with white text in BOTH light and dark mode (the theme's own "error" colour turns pale pink in dark mode)
+@Composable fun redBtn() = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F), contentColor = Color.White, disabledContainerColor = Grey, disabledContentColor = Color.White)
 @Composable fun blueBtn() = ButtonDefaults.buttonColors(containerColor = Blue, contentColor = Color.White, disabledContainerColor = Grey, disabledContentColor = Color.White)
 @Composable fun orangeBtn() = ButtonDefaults.buttonColors(containerColor = Orange, contentColor = Color.White, disabledContainerColor = Grey, disabledContentColor = Color.White)
 @Composable fun DonePopup(text: String?, onClose: () -> Unit) {
@@ -679,12 +681,12 @@ fun statusColor(s: String) = when (s) { "READY TO DISPATCH" -> Green; "DELIVERED
     val canDel = "Admin" in roles
     if (confirmCancel) AlertDialog(onDismissRequest = { confirmCancel = false }, title = { Text("Cancel job #${j.s("id")}?") },
         text = { Text("Workers will no longer see this job. This cannot be undone.") },
-        confirmButton = { Button({ confirmCancel = false; cancelJob(j.s("_id"), who) }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Text("CANCEL JOB") } },
+        confirmButton = { Button({ confirmCancel = false; cancelJob(j.s("_id"), who) }, colors = redBtn()) { Text("CANCEL JOB") } },
         dismissButton = { TextButton({ confirmCancel = false }) { Text("Keep job") } })
     if (prioDlg) PickDialog("Job Priority", listOf("Urgent", "Normal"), 1, { setPriority(j.s("_id"), it, who); prioDlg = false }) { prioDlg = false }
     if (confirmDel) AlertDialog(onDismissRequest = { confirmDel = false }, title = { Text("Delete job #${j.s("id")}?") },
         text = { Text("The job disappears for everyone, including workers who are on it. It moves to Deleted Jobs, where you can restore it with all its progress or delete it permanently.") },
-        confirmButton = { Button({ confirmDel = false; deleteJob(j.s("_id"), who) }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Text("DELETE") } },
+        confirmButton = { Button({ confirmDel = false; deleteJob(j.s("_id"), who) }, colors = redBtn()) { Text("DELETE") } },
         dismissButton = { TextButton({ confirmDel = false }) { Text("Cancel") } })
     val opts = listOfNotNull(if (j.b("lam")) "Lamination" else null, if (j.b("foil")) "Foil" else null, if (j.b("spot")) "Spot UV" else null,
         if (j.s("coating") != "None" && j.s("coating").isNotEmpty()) j.s("coating") else null).ifEmpty { listOf("No finishing") }.joinToString(" • ")
@@ -722,7 +724,7 @@ fun statusColor(s: String) = when (s) { "READY TO DISPATCH" -> Green; "DELIVERED
                             colors = ButtonDefaults.buttonColors(containerColor = Yellow, contentColor = Color.Black)) { Text(if (j.b("hold")) "▶ RESUME JOB" else "⏸ PUT ON HOLD") }
                         OutlinedButton({ confirmCancel = true }, Modifier.fillMaxWidth().padding(top = 8.dp), shape = RoundedCornerShape(12.dp)) { Text("CANCEL JOB") }
                     }
-                    if (canDel) Button({ confirmDel = true }, Modifier.fillMaxWidth().padding(top = 12.dp), shape = RoundedCornerShape(12.dp), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Text("DELETE JOB") }
+                    if (canDel) Button({ confirmDel = true }, Modifier.fillMaxWidth().padding(top = 12.dp), shape = RoundedCornerShape(12.dp), colors = redBtn()) { Text("DELETE JOB") }
                 }
             }
         }
@@ -903,7 +905,7 @@ fun statusColor(s: String) = when (s) { "READY TO DISPATCH" -> Green; "DELIVERED
     var confirm by remember { mutableStateOf(false) }
     if (confirm) AlertDialog(onDismissRequest = { confirm = false }, title = { Text("Delete ${u.s("name")}?") },
         text = { Text("They are logged out immediately and can no longer sign in. To reuse this phone number later, also delete the account in Firebase console > Authentication.") },
-        confirmButton = { Button({ confirm = false; db.collection("users").document(u.s("_id")).delete(); logEvent("Deleted user", who, target = u.s("name")) }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Text("DELETE") } },
+        confirmButton = { Button({ confirm = false; db.collection("users").document(u.s("_id")).delete(); logEvent("Deleted user", who, target = u.s("name")) }, colors = redBtn()) { Text("DELETE") } },
         dismissButton = { TextButton({ confirm = false }) { Text("Cancel") } })
     Card(Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable { open = !open }, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(2.dp)) {
         Column(Modifier.padding(12.dp)) {
@@ -1050,7 +1052,7 @@ fun statusColor(s: String) = when (s) { "READY TO DISPATCH" -> Green; "DELIVERED
     var purge by remember { mutableStateOf<M?>(null) }
     purge?.let { j ->
         AlertDialog(onDismissRequest = { purge = null }, title = { Text("Delete job #${j.s("id")} permanently?") }, text = { Text("This cannot be undone.") },
-            confirmButton = { Button({ purgeJob(j.s("_id"), who); purge = null }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Text("DELETE FOREVER") } },
+            confirmButton = { Button({ purgeJob(j.s("_id"), who); purge = null }, colors = redBtn()) { Text("DELETE FOREVER") } },
             dismissButton = { TextButton({ purge = null }) { Text("Cancel") } })
     }
     if (del.isEmpty()) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("No deleted jobs", style = MaterialTheme.typography.titleMedium, color = Color.Gray) }
